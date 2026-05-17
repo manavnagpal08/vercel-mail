@@ -140,10 +140,28 @@ module.exports = async (req, res) => {
 
   const PROJECT_ID = 'envirotech-sys-2026';
   const API_KEY    = process.env.FIREBASE_API_KEY;
-  const GMAIL_USER = process.env.GMAIL_USER || 'envirotechadmin@gmail.com';
-  const GMAIL_PASS = process.env.GMAIL_PASS;
+  let GMAIL_USER = process.env.GMAIL_USER || 'envirotechadmin@gmail.com';
+  let GMAIL_PASS = process.env.GMAIL_PASS;
 
   try {
+    // ── 0. Fetch Mail Credentials from Firestore ────────────────────────────
+    const configUrl = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/settings/email_config?key=${API_KEY}`;
+    const configResp = await fetch(configUrl);
+    const configData = await configResp.json();
+    
+    if (configData && configData.fields) {
+      if (configData.fields.admin_email && configData.fields.admin_email.stringValue) {
+        GMAIL_USER = configData.fields.admin_email.stringValue;
+      }
+      if (configData.fields.app_password && configData.fields.app_password.stringValue) {
+        GMAIL_PASS = configData.fields.app_password.stringValue;
+      }
+    }
+
+    if (!GMAIL_PASS) {
+      console.error('Missing GMAIL_PASS. Please set app_password in Firestore settings/email_config or as an environment variable.');
+      return res.status(500).json({ error: 'Missing email credentials (app_password)' });
+    }
     // ── 1. Fetch all pending reminders from Firestore REST API ──────────────
     const remindersUrl =
       `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/reminder_logs?key=${API_KEY}`;
