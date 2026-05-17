@@ -4,10 +4,6 @@
     {
       "path": "/api/cron-reminders",
       "schedule": "0 2 * * *"
-    },
-    {
-      "path": "/api/cron-hourly",
-      "schedule": "0 * * * *"
     }
   ],
   "rewrites": [
