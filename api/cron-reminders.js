@@ -134,8 +134,6 @@ function buildAdminBriefingEmail(todayItems, overdueItems, dateLabel) {
 </html>`;
 }
 
-// ─── Main Handler ────────────────────────────────────────────────────────────
-
 module.exports = async (req, res) => {
 
   const PROJECT_ID = 'envirotech-sys-2026';
@@ -162,6 +160,30 @@ module.exports = async (req, res) => {
       console.error('Missing GMAIL_PASS. Please set app_password in Firestore settings/email_config or as an environment variable.');
       return res.status(500).json({ error: 'Missing email credentials (app_password)' });
     }
+
+    // Initialize Dates early
+    const now         = new Date();
+    // IST offset: UTC+5:30
+    const istOffset   = 5.5 * 60 * 60 * 1000;
+    const nowIST      = new Date(now.getTime() + istOffset);
+    const todayStartIST = new Date(nowIST.getFullYear(), nowIST.getMonth(), nowIST.getDate());
+    const todayEndIST   = new Date(todayStartIST.getTime() + 24 * 60 * 60 * 1000);
+    const todayISTStr   = nowIST.toLocaleDateString('en-CA'); // YYYY-MM-DD format
+
+    // ── 0.5. Check if briefing was already sent today (safety check) ─────────
+    const force = req.query?.force === 'true';
+    const stateUrl = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/settings/briefing_state?key=${API_KEY}`;
+    const stateResp = await fetch(stateUrl);
+    const stateData = await stateResp.json();
+
+    if (!force && stateData && stateData.fields && stateData.fields.last_sent_date?.stringValue === todayISTStr) {
+      console.log(`[Briefing Check] Daily briefing already sent for today (${todayISTStr}). Skipping email.`);
+      return res.status(200).json({
+        message: `Daily briefing already sent for today (${todayISTStr}). Skipping.`,
+        sent: 0
+      });
+    }
+
     // ── 1. Fetch all pending reminders from Firestore REST API ──────────────
     const remindersUrl =
       `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/reminder_logs?key=${API_KEY}`;
@@ -173,17 +195,9 @@ module.exports = async (req, res) => {
     }
 
     // ── 2. Split into Today vs Overdue ──────────────────────────────────────
-    const now         = new Date();
-    // IST offset: UTC+5:30
-    const istOffset   = 5.5 * 60 * 60 * 1000;
-    const nowIST      = new Date(now.getTime() + istOffset);
-    const todayStartIST = new Date(nowIST.getFullYear(), nowIST.getMonth(), nowIST.getDate());
-    const todayEndIST   = new Date(todayStartIST.getTime() + 24 * 60 * 60 * 1000);
-
     const todayItems   = [];
     const overdueItems = [];
-
-    const idsToMark = [];
+    const todayIdsToMark = []; // Fix: separate array to track today's reminders to mark as notified
 
     for (const doc of remindersData.documents) {
       const f = doc.fields || {};
@@ -213,12 +227,11 @@ module.exports = async (req, res) => {
         // Due today — send if not yet notified
         if (!isNotified) {
           todayItems.push(itemData);
-          idsToMark.push(docId);
+          todayIdsToMark.push(docId); // Fix: Only add today's reminders to be marked as notified
         }
       } else if (remIST < todayStartIST) {
         // Past due — always show in overdue (re-notify)
         overdueItems.push(itemData);
-        idsToMark.push(docId);
       }
     }
 
@@ -266,8 +279,7 @@ module.exports = async (req, res) => {
     });
 
     // ── 5. Mark today's reminders as notified (avoid duplicate daily emails) ──
-    // Only mark today's — overdue ones will keep appearing until done
-    for (const docId of idsToMark.filter((_, i) => i < todayItems.length)) {
+    for (const docId of todayIdsToMark) {
       const patchUrl =
         `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/reminder_logs/${docId}?updateMask.fieldPaths=isNotified&key=${API_KEY}`;
       await fetch(patchUrl, {
@@ -276,6 +288,14 @@ module.exports = async (req, res) => {
         body:    JSON.stringify({ fields: { isNotified: { booleanValue: true } } }),
       });
     }
+
+    // ── 5.5. Save once-per-day briefing state to prevent duplicate emails ────
+    const patchStateUrl = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/settings/briefing_state?updateMask.fieldPaths=last_sent_date&key=${API_KEY}`;
+    await fetch(patchStateUrl, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ fields: { last_sent_date: { stringValue: todayISTStr } } }),
+    });
 
     return res.status(200).json({
       message: 'Daily briefing sent successfully.',
